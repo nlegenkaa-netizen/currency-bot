@@ -10,9 +10,9 @@ RATES = {
     "USD": 10.5,
     "EUR": 11.4,
     "RUB": 0.11,
-    "UAH": 0.25,    # гривна
-    "GBP": 13.2,    # фунт
-    "SEK": 0.95,    # шведская крона
+    "UAH": 0.25,
+    "GBP": 13.2,
+    "SEK": 0.95,
 }
 
 # Псевдонимы на русском
@@ -33,13 +33,14 @@ def get_menu():
     ], resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
     await update.message.reply_text(
         "Привет! Я конвертер валют 💱\n\n"
         "Напиши сумму и валюту:\n"
         "• 100 USD или 100 долларов\n"
         "• 50 EUR или 50 евро\n"
         "• 1000 UAH или 1000 гривен\n\n"
-        "Или используй меню 👇",
+        "Или выбери валюту в меню 👇",
         reply_markup=get_menu()
     )
 
@@ -52,80 +53,126 @@ async def show_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     
-    # Проверяем кнопки меню
+    # Кнопка "Все курсы"
     if "Все курсы" in text:
         await show_rates(update, context)
         return
     
+    # Кнопка "NOK → другую"
     if "NOK → другую" in text:
+        context.user_data["mode"] = "from_nok"
+        context.user_data["currency"] = None
         await update.message.reply_text(
-            "Напиши: NOK 100 USD\n(сколько NOK конвертировать и в какую валюту)",
+            "Введи сумму в NOK и валюту:\nНапример: 100 USD",
             reply_markup=get_menu()
         )
         return
     
+    # Кнопки валют → NOK
     if "→ NOK" in text:
-        # Кнопка меню типа "USD → NOK"
-        currency = text.split()[1] if len(text.split()) > 1 else ""
-        currency = currency.replace("💵", "").replace("💶", "").replace("🇺🇦", "").replace("🇷🇺", "").strip()
-        await update.message.reply_text(f"Введи сумму в {currency}:", reply_markup=get_menu())
+        if "USD" in text:
+            context.user_data["currency"] = "USD"
+        elif "EUR" in text:
+            context.user_data["currency"] = "EUR"
+        elif "UAH" in text:
+            context.user_data["currency"] = "UAH"
+        elif "RUB" in text:
+            context.user_data["currency"] = "RUB"
+        
+        currency = context.user_data.get("currency")
+        if currency:
+            context.user_data["mode"] = "to_nok"
+            await update.message.reply_text(
+                f"Введи сумму в {currency}:",
+                reply_markup=get_menu()
+            )
         return
-
-    # Парсим ввод
-    parts = text.upper().split()
     
-    # Обратная конвертация: NOK 100 USD
-    if len(parts) == 3 and parts[0] == "NOK":
-        try:
-            amount = float(parts[1])
-            target = parts[2]
-            rate = RATES.get(target)
-            if rate:
-                result = amount / rate
-                await update.message.reply_text(
-                    f"{amount} NOK = {result:.2f} {target}",
-                    reply_markup=get_menu()
-                )
-                return
-        except ValueError:
-            pass
+    # Проверяем, есть ли сохранённая валюта (после нажатия кнопки)
+    saved_currency = context.user_data.get("currency")
+    mode = context.user_data.get("mode")
     
-    # Обычная конвертация: 100 USD
-    if len(parts) >= 2:
-        try:
-            amount = float(parts[0].replace(",", "."))
-            currency = parts[1]
-            
-            # Проверяем русские названия
-            currency_lower = text.split()[1].lower() if len(text.split()) > 1 else ""
-            if currency_lower in ALIASES:
-                currency = ALIASES[currency_lower]
-            
-            rate = RATES.get(currency)
-            if rate:
-                result = amount * rate
-                await update.message.reply_text(
-                    f"{amount} {currency} = {result:.2f} NOK",
-                    reply_markup=get_menu()
-                )
-                return
-        except (ValueError, IndexError):
-            pass
-    
-    # Если просто число — спрашиваем валюту
+    # Пробуем распарсить число
     try:
-        amount = float(text.replace(",", "."))
-        context.user_data["amount"] = amount
-        await update.message.reply_text(
-            f"Сумма: {amount}\nТеперь выбери валюту:",
-            reply_markup=get_menu()
-        )
-        return
+        amount = float(text.replace(",", ".").replace(" ", ""))
+        
+        if saved_currency and mode == "to_nok":
+            # Конвертация в NOK
+            rate = RATES.get(saved_currency)
+            result = amount * rate
+            await update.message.reply_text(
+                f"{amount} {saved_currency} = {result:.2f} NOK",
+                reply_markup=get_menu()
+            )
+            context.user_data.clear()
+            return
+        
+        if mode == "from_nok":
+            # Ждём валюту для обратной конвертации
+            context.user_data["amount"] = amount
+            await update.message.reply_text(
+                f"Сумма: {amount} NOK\nТеперь напиши валюту (USD, EUR, UAH...)",
+                reply_markup=get_menu()
+            )
+            return
+            
     except ValueError:
         pass
     
+    # Парсим "100 USD" или "100 долларов"
+    parts = text.split()
+    if len(parts) >= 2:
+        try:
+            amount = float(parts[0].replace(",", "."))
+            currency_input = parts[1].upper()
+            
+            # Проверяем русские названия
+            currency_lower = parts[1].lower()
+            if currency_lower in ALIASES:
+                currency_input = ALIASES[currency_lower]
+            
+            # Обратная конвертация: из NOK
+            if mode == "from_nok" or (len(parts) == 2 and context.user_data.get("amount")):
+                saved_amount = context.user_data.get("amount", amount)
+                rate = RATES.get(currency_input)
+                if rate:
+                    result = saved_amount / rate
+                    await update.message.reply_text(
+                        f"{saved_amount} NOK = {result:.2f} {currency_input}",
+                        reply_markup=get_menu()
+                    )
+                    context.user_data.clear()
+                    return
+            
+            # Обычная конвертация в NOK
+            rate = RATES.get(currency_input)
+            if rate:
+                result = amount * rate
+                await update.message.reply_text(
+                    f"{amount} {currency_input} = {result:.2f} NOK",
+                    reply_markup=get_menu()
+                )
+                context.user_data.clear()
+                return
+                
+        except (ValueError, IndexError):
+            pass
+    
+    # Проверяем, может это просто валюта для обратной конвертации
+    if mode == "from_nok" and context.user_data.get("amount"):
+        currency_input = text.upper().strip()
+        if currency_input in RATES:
+            amount = context.user_data["amount"]
+            result = amount / RATES[currency_input]
+            await update.message.reply_text(
+                f"{amount} NOK = {result:.2f} {currency_input}",
+                reply_markup=get_menu()
+            )
+            context.user_data.clear()
+            return
+    
     await update.message.reply_text(
-        "Не понял 🤔\nНапиши например: 100 USD или 100 долларов",
+        "Не понял 🤔\nВыбери валюту в меню или напиши: 100 USD",
         reply_markup=get_menu()
     )
 
