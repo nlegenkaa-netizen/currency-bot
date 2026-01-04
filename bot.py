@@ -1,5 +1,6 @@
 import os
 import httpx
+from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -11,26 +12,27 @@ RATES_API = "https://api.exchangerate-api.com/v4/latest/NOK"
 
 # Кэш курсов
 RATES = {}
+RATES_UPDATED = None  # Время обновления
 
 async def update_rates():
     """Загружает актуальные курсы из интернета"""
-    global RATES
+    global RATES, RATES_UPDATED
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(RATES_API)
             data = response.json()
-            # API даёт курс NOK к другим, нам нужно наоборот
             for currency, rate in data["rates"].items():
                 if rate > 0:
-                    RATES[currency] = 1 / rate  # сколько NOK за 1 единицу валюты
+                    RATES[currency] = 1 / rate
+            RATES_UPDATED = datetime.now()
             print(f"Курсы обновлены: {len(RATES)} валют")
     except Exception as e:
         print(f"Ошибка загрузки курсов: {e}")
-        # Резервные курсы
         RATES.update({
             "USD": 10.5, "EUR": 11.4, "RUB": 0.11,
             "UAH": 0.25, "GBP": 13.2, "SEK": 0.95,
         })
+        RATES_UPDATED = datetime.now()
 
 # Псевдонимы на русском
 ALIASES = {
@@ -40,7 +42,6 @@ ALIASES = {
     "гривна": "UAH", "гривен": "UAH", "грн": "UAH",
     "фунт": "GBP", "фунтов": "GBP",
     "крона": "SEK", "крон": "SEK",
-    "нок": "NOK", "крон": "NOK",
 }
 
 def get_menu():
@@ -49,6 +50,15 @@ def get_menu():
         ["🇺🇦 UAH → NOK", "🇷🇺 RUB → NOK"],
         ["🔄 NOK → другую", "📋 Все курсы"]
     ], resize_keyboard=True)
+
+def format_update_time():
+    """Форматирует время обновления курсов"""
+    if RATES_UPDATED:
+        months = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
+                  "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+        d = RATES_UPDATED
+        return f"{d.day} {months[d.month]} {d.year}, {d.hour:02d}:{d.minute:02d}"
+    return "неизвестно"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -69,9 +79,11 @@ async def show_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not RATES:
         await update_rates()
     
-    # Показываем только популярные валюты
     popular = ["USD", "EUR", "UAH", "RUB", "GBP", "SEK", "PLN", "CHF"]
-    lines = ["📋 Актуальные курсы (к NOK):\n"]
+    lines = [
+        "📋 Актуальные курсы (к NOK):",
+        f"🕐 Обновлено: {format_update_time()}\n"
+    ]
     for currency in popular:
         rate = RATES.get(currency)
         if rate:
@@ -122,7 +134,6 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
     
-    # Проверяем сохранённую валюту
     saved_currency = context.user_data.get("currency")
     mode = context.user_data.get("mode")
     
@@ -159,12 +170,10 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
             amount = float(parts[0].replace(",", "."))
             currency_input = parts[1].upper()
             
-            # Проверяем русские названия
             currency_lower = parts[1].lower()
             if currency_lower in ALIASES:
                 currency_input = ALIASES[currency_lower]
             
-            # Обратная конвертация
             if mode == "from_nok" or context.user_data.get("amount"):
                 saved_amount = context.user_data.get("amount", amount)
                 rate = RATES.get(currency_input)
@@ -177,7 +186,6 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context.user_data.clear()
                     return
             
-            # Обычная конвертация
             rate = RATES.get(currency_input)
             if rate:
                 result = amount * rate
@@ -197,7 +205,6 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (ValueError, IndexError):
             pass
     
-    # Проверяем валюту для обратной конвертации
     if mode == "from_nok" and context.user_data.get("amount"):
         currency_input = text.upper().strip()
         if currency_input in RATES:
